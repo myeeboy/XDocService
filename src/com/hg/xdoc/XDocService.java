@@ -3,11 +3,13 @@ package com.hg.xdoc;
 import java.beans.BeanInfo;
 import java.beans.Introspector;
 import java.beans.PropertyDescriptor;
+import java.io.BufferedReader;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
+import java.io.FileReader;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
@@ -49,7 +51,7 @@ import org.xml.sax.SAXException;
 /**
  * XDoc服务
  * @author xdoc
- * @version 11.3.0
+ * @version 11.5.5
  */
 public class XDocService {
 	/**
@@ -596,6 +598,18 @@ public class XDocService {
 	public static void main(String[] args) {
 		if (args.length > 0 && args[0].length() > 0) {
 			String url = args[0];
+			if (url.charAt(0) == '@') { //命令文件
+				File cmdFile = new File(url.substring(1));
+				try {
+					FileReader reader = new FileReader(cmdFile);
+					url = (new BufferedReader(reader)).readLine();
+					reader.close();
+					cmdFile.delete();
+				} catch (Exception e) {
+					e.printStackTrace();
+					return;
+				}
+			}
 			String server = DEFAULT_URL;
 			int pos = url.indexOf('?');
 			if (pos > 0) {
@@ -617,11 +631,9 @@ public class XDocService {
 						key = decode(params[i].substring(0, pos));
 						value = decode(params[i].substring(pos + 1));
 						if (isXDocData(key, value)) {
-					    	System.out.println(key + "=" + url);
 							value = toDataURI(value);
 						} else if (key.indexOf("@file") > 0) {
 							key = key.substring(0, key.length() - 5);
-					    	System.out.println(key + "=" + url);
 							value = toDataURI(value);
 						} else if (key.equals("_key")) {
 							xkey = value;
@@ -767,7 +779,9 @@ public class XDocService {
 		while (it.hasNext()) {
 			key = it.next();
 			value = toParamString(param.get(key));
-			if (isXDocData(key, value)) {
+			if (key.equals("_xdoc") && value.startsWith("@")) {
+				value = value.substring(1);
+			} else if (isXDocData(key, value)) {
 				value = toDataURI(value);
 			} else if (key.endsWith("@file")) {
 				key = key.substring(0, key.length() - 5);
@@ -905,6 +919,7 @@ public class XDocService {
 	    			|| value.startsWith("<")
 	    			|| value.startsWith("{")
 	    			|| value.startsWith("[")
+	    			|| value.startsWith("data:")
 	    			|| name.equals("_xdoc") && value.startsWith("text:")) {
 	    		return false;
 	    	} else {
@@ -958,7 +973,10 @@ public class XDocService {
         in.close();
     }
     private static boolean isFile(String url) {
-    	return url.indexOf(':') < 0 || url.indexOf(':') == 1;
+    	int pos = url.indexOf(':');
+    	return pos < 0
+    			|| pos == 1
+    			|| (pos == 2 && url.charAt(0) == '/');
     }
     private static String toDataURI(InputStream in) throws IOException {
     	ByteArrayOutputStream out = new ByteArrayOutputStream();
@@ -973,7 +991,7 @@ public class XDocService {
     		StringBuffer sb = new StringBuffer();
     		String format = null;;
     		InputStream in = null;
-    		if (isFile(url)) {
+    		if (isFile(url) || url.startsWith("class://")) {
     			int pos = url.lastIndexOf('.');
     			if (pos > 0) {
     				format = url.substring(pos + 1);
@@ -990,7 +1008,17 @@ public class XDocService {
     					format = "application/" + format;
     				}
     			}
-    			in = new FileInputStream(url);
+    			if (url.startsWith("class://")) {
+                    String cls = url.substring(8, url.indexOf("/", 8));
+                    String path = url.substring(url.indexOf("/", 8) + 1);
+                    try {
+						in = Class.forName(cls).getResourceAsStream(path);
+					} catch (Exception e) {
+						throw new IOException(e);
+					}
+    			} else {
+    				in = new FileInputStream(url);
+    			}
     		} else {
     			URLConnection conn = new URL(url).openConnection();
     			in = conn.getInputStream();
