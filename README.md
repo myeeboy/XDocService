@@ -1,0 +1,2 @@
+# XDocService
+XDocService用于在java应用中和操作系统命令行中调用xdoc服务，实现生成文档，转换文档等功能。
