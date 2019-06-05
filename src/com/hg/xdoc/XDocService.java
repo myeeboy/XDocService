@@ -1,8 +1,5 @@
 package com.hg.xdoc;
 
-import java.beans.BeanInfo;
-import java.beans.Introspector;
-import java.beans.PropertyDescriptor;
 import java.io.BufferedReader;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
@@ -22,6 +19,7 @@ import java.lang.annotation.Target;
 import java.lang.reflect.Array;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
+import java.lang.reflect.Modifier;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.net.URLConnection;
@@ -51,7 +49,7 @@ import org.xml.sax.SAXException;
 /**
  * XDoc服务
  * @author xdoc
- * @version 11.5.5
+ * @version 12.2.5
  */
 public class XDocService {
 	/**
@@ -62,7 +60,13 @@ public class XDocService {
 	 * 默认账号口令
 	 */
 	public static String DEFAULT_KEY = "";
+	/**
+	 * XDOC服务地址
+	 */
 	private String url;
+	/**
+	 * XDOC服务口令
+	 */
 	private String key;
 	/**
 	 * 服务地址
@@ -545,16 +549,32 @@ public class XDocService {
 		return parse(out.toByteArray()).equals("true");
 	}
 	/**
-	 * 数据查询
-	 * @param sql SQL
+	 * 查询表单数据
+	 * @param xdoc 表单文档路径
+	 * @param keyword 数据过滤关键字
+	 * @return
+	 * @throws IOException
+	 */
+	public List<Map<String, String>> xquery(String xdoc, String keyword) throws IOException {
+		return this.xquery(xdoc, keyword, -1, -1);
+	}
+	/**
+	 * 查询表单数据
+	 * @param xdoc 表单文档路径
+	 * @param keyword 数据过滤关键字
+	 * @param offset 数据偏移，与“_rows”参数一起使用，用于分页，如：&_offset=20&&_rows=10表示每页10条，取第3页
+	 * @param rows 数量
 	 * @return
 	 * @throws IOException
 	 */
 	@SuppressWarnings("unchecked")
-	public List<Map<String, String>> query(String sql) throws IOException {
+	public List<Map<String, String>> xquery(String xdoc, String keyword, int offset, int rows) throws IOException {
 		Map<String, String> params = new HashMap<String, String>();
-		params.put("_func", "query");
-		params.put("_sql", sql);
+		params.put("_func", "xquery");
+		params.put("_xdoc", xdoc);
+		params.put("_keyword", keyword);
+		params.put("_offset", String.valueOf(offset));
+		params.put("_rows", String.valueOf(rows));
 		ByteArrayOutputStream out = new ByteArrayOutputStream();
 		invoke(params, out);
 		return (List<Map<String, String>>) parse(out.toByteArray());
@@ -779,9 +799,7 @@ public class XDocService {
 		while (it.hasNext()) {
 			key = it.next();
 			value = toParamString(param.get(key));
-			if (key.equals("_xdoc") && value.startsWith("@")) {
-				value = value.substring(1);
-			} else if (isXDocData(key, value)) {
+			if (isXDocData(key, value)) {
 				value = toDataURI(value);
 			} else if (key.endsWith("@file")) {
 				key = key.substring(0, key.length() - 5);
@@ -864,21 +882,14 @@ public class XDocService {
 			if (!set.contains(obj) && obj.getClass() != Object.class && obj.getClass() != Class.class) {
 				set.add(obj);
 				try {
+					List<Method> getters = findGetters(obj);
 					boolean b = false;
-					BeanInfo bi = Introspector.getBeanInfo(obj.getClass(), Object.class);
-					PropertyDescriptor[] pds = bi.getPropertyDescriptors();
-					Object res;
-					Method method;
-					for (PropertyDescriptor pd : pds) {
-						method = pd.getReadMethod();
-						if (method != null) {
-							if (b) sb.append(",");
-							jencode(pd.getName(), sb);
-							sb.append(":");
-							res = method.invoke(obj, new Object[0]);
-							writeParamString(sb, res, set);
-							b = true;
-						}
+					for (Method method : getters) {
+						if (b) sb.append(",");
+						jencode(findGetterName(method), sb);
+						sb.append(":");
+						writeParamString(sb, method.invoke(obj, new Object[0]), set);
+						b = true;
 					}
 				} catch (Exception e) {
 					throw new IOException(e);
@@ -887,6 +898,41 @@ public class XDocService {
 			}
 			sb.append("}");
 		}
+	}
+	private static List<Method> findGetters(Object obj) {
+		List<Method> getters = new ArrayList<Method>();
+		String name;
+        for (Method method : obj.getClass().getMethods()) {
+            name = method.getName();
+            if (Modifier.isStatic(method.getModifiers())
+            		|| method.getReturnType().equals(Void.TYPE)
+            		|| method.getParameterTypes().length != 0
+            		|| method.getReturnType() == ClassLoader.class
+            		) {
+                continue;
+            }
+            if (name.startsWith("get") && name.length() >= 4 && !name.equals("getClass")
+            		|| name.startsWith("is") && name.length() >= 3) {
+        		getters.add(method);
+            }
+        }
+        return getters;
+    }
+	private static String findGetterName(Method method) {
+		String name = method.getName();
+		if (name.startsWith("get")) {
+			name = name.substring(3);
+		} else if (name.startsWith("is")) {
+			name = name.substring(2);
+		}
+        if (name.length() > 1
+        		&& Character.isUpperCase(name.charAt(1))
+        		&& Character.isUpperCase(name.charAt(0))){
+            return name;
+        }
+        char chars[] = name.toCharArray();
+        chars[0] = Character.toLowerCase(chars[0]);
+        return new String(chars);
 	}
 	private static void jencode(String str, StringBuilder sb) {
         sb.append("\"");
@@ -978,34 +1024,30 @@ public class XDocService {
     			|| pos == 1
     			|| (pos == 2 && url.charAt(0) == '/');
     }
-    private static String toDataURI(InputStream in) throws IOException {
-    	ByteArrayOutputStream out = new ByteArrayOutputStream();
-    	pipe(in, out);
-    	StringBuffer sb = new StringBuffer();
-    	sb.append("data:application/octet-stream;base64,");
-    	sb.append(toBase64(out.toByteArray()));
-    	return sb.toString();
+    /**
+     * URL结果转换为datauri
+     * @param url http/ftp/file
+     * @return
+     * @throws IOException
+     */
+    public static String toDataURI(String url) throws IOException {
+    	return toDataURI(url, null);
     }
-    private static String toDataURI(String url) throws IOException {
+    /**
+     * URL结果转换为datauri
+     * @param url http/ftp/file
+     * @param format 文件格式或mime-type
+     * @return
+     * @throws IOException
+     */
+    public static String toDataURI(String url, String format) throws IOException {
     	if (url.length() > 0) {
-    		StringBuffer sb = new StringBuffer();
-    		String format = null;;
     		InputStream in = null;
     		if (isFile(url) || url.startsWith("class://")) {
-    			int pos = url.lastIndexOf('.');
-    			if (pos > 0) {
-    				format = url.substring(pos + 1);
-    				if (format.equals("jpg")) {
-    					format = "jpeg";
-    				} else if (format.equals("htm")) {
-    					format = "html";
-    				}
-    				if (format.equals("png") || format.equals("jpeg") || format.equals("gif")) {
-    					format = "image/" + format;
-    				} else if (format.equals("html") || format.equals("xml")) {
-    					format = "text/" + format;
-    				} else {
-    					format = "application/" + format;
+    			if (format == null) {
+    				int pos = url.lastIndexOf('.');
+    				if (pos > 0) {
+    					format = url.substring(pos + 1).toLowerCase();
     				}
     			}
     			if (url.startsWith("class://")) {
@@ -1022,19 +1064,56 @@ public class XDocService {
     		} else {
     			URLConnection conn = new URL(url).openConnection();
     			in = conn.getInputStream();
-    			format = ((HttpURLConnection) conn).getContentType();
+    			if (format == null) {
+    				format = conn.getContentType();
+    			}
     		}
-    		if (format == null) {
-    			format = "application/octet-stream";
-    		}
-    		ByteArrayOutputStream out = new ByteArrayOutputStream();
-    		pipe(in, out);
-    		sb.append("data:").append(format).append(";base64,");
-    		sb.append(toBase64(out.toByteArray()));
-    		return sb.toString();
+    		return toDataURI(in, format);
     	} else {
     		return "";
     	}
+    }
+    /**
+     * 数据流转换为datauri
+     * @param in
+     * @return
+     * @throws IOException
+     */
+    public static String toDataURI(InputStream in) throws IOException {
+    	return toDataURI(in, null);
+    }
+    /**
+     * 数据流转换为datauri
+     * @param in
+     * @param format 文件格式或mime-type
+     * @return
+     * @throws IOException
+     */
+    public static String toDataURI(InputStream in, String format) throws IOException {
+    	ByteArrayOutputStream out = new ByteArrayOutputStream();
+    	pipe(in, out);
+    	if (format != null) {
+    		if (format.indexOf('/') < 0) {
+    			if (format.equals("jpg")) {
+    				format = "jpeg";
+    			} else if (format.equals("htm")) {
+    				format = "html";
+    			}
+    			if (format.equals("png") || format.equals("jpeg") || format.equals("gif")) {
+    				format = "image/" + format;
+    			} else if (format.equals("html") || format.equals("xml")) {
+    				format = "text/" + format;
+    			} else {
+    				format = "application/" + format;
+    			}
+    		}
+    	} else {
+			format = "application/octet-stream";
+		}
+    	StringBuffer sb = new StringBuffer();
+    	sb.append("data:").append(format).append(";base64,");
+    	sb.append(toBase64(out.toByteArray()));
+    	return sb.toString();
     }
     private static String toBase64(final byte[] data) {
         final char[] out = new char[((data.length + 2) / 3) * 4];
